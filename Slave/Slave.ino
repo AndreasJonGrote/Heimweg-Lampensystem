@@ -1,3 +1,9 @@
+/**
+ * Version 0.1a
+ * @todo Stabilität im Ultraschall
+ * @todo Holdtime vs. Threshold wegen Framedrops
+ */
+
 // Bibliothek für die Steuerung der NeoPixel LEDs einbinden
 #include <Adafruit_NeoPixel.h>
 
