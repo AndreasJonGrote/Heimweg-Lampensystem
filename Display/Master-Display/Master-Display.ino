@@ -32,7 +32,7 @@ String utf8ToAscii(String text) {
 }
 
 // Text zeichnen mit Padding, Umbruch und Farben
-void drawWrappedLine(String text, int size = 1, uint16_t color = ST77XX_BLACK) {
+void drawWrappedLine(String text, int size = 1, uint16_t color = ST77XX_WHITE) {
   String textCopy = utf8ToAscii(text);
 
   int charWidth = 6 * size;
@@ -43,7 +43,7 @@ void drawWrappedLine(String text, int size = 1, uint16_t color = ST77XX_BLACK) {
   for (int i = 0; i < textCopy.length(); i += charsPerLine) {
     String line = textCopy.substring(i, min(i + charsPerLine, (int)textCopy.length()));
     tft.setTextSize(size);
-    tft.setTextColor(color, ST77XX_WHITE);
+    tft.setTextColor(color);
     tft.setCursor(padding, currentY);
     tft.print(line);
     currentY += lineHeight;
@@ -54,12 +54,12 @@ void setup() {
   Serial.begin(115200);
   tft.initR(INITR_BLACKTAB);
   tft.setRotation(0);
-  tft.fillScreen(ST77XX_WHITE);
+  tft.fillScreen(ST77XX_BLACK);
   resetLines();
 
   drawWrappedLine("Padding links & rechts – passt!", 1);
-  drawWrappedLine("Große Wörter wie Übersetzung oder äußert erscheinen korrekt.", 1, ST77XX_BLUE);
-  drawWrappedLine("Noch mehr Text in Rot, der umbricht.", 2, ST77XX_RED);
+  drawWrappedLine("Große Wörter wie Übersetzung oder äußert erscheinen korrekt.", 1);
+  drawWrappedLine("Noch mehr Text in Rot, der umbricht.", 1);
 }
 
 void loop() {
