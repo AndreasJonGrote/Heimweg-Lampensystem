@@ -1,89 +1,137 @@
-#include <painlessMesh.h> // benötigt AsyncTCP
+/*
+   ESP32 Lampennetzwerk – Master/Slave Setup mit Webinterface
+   Stand: Mai 2025
+   Von: Jon & ChatGPT
+*/
 
-#define   MESH_PREFIX     "MeshNetwork"
-#define   MESH_PASSWORD   "password123"
-#define   MESH_PORT       5555
-#define   MESH_MASTER     true  // true für Master-Node, false für Slave-Node
-#define   DEVICE_ID       "LAMP_001" // Eindeutige ID für jedes Gerät
+#include <WiFi.h>
+#include <WebServer.h>
+#include <esp_wifi.h>
+#include <esp_netif.h>
 
-Scheduler userScheduler;
-painlessMesh  mesh;
+// =====================[ KONFIGURATION ]======================
 
-void sendMessage(); // Prototype
+// Rolle: true = Master (Access Point), false = Slave (Client)
+const bool IS_MASTER = true;
 
-// Deklariere taskSendMessage vor der setup-Funktion
-Task taskSendMessage(TASK_SECOND * 1, TASK_FOREVER, &sendMessage);
+// Geräte-ID (z.B. für spätere Zuordnung)
+const uint8_t DEVICE_ID = 3;
+
+// WLAN-Daten (wenn Master: eigener AP, wenn Slave: damit verbinden)
+const char* SSID_MASTER = "LAMPEN_NETZWERK";
+const char* PASSWORD_MASTER = "geheim123";
+
+// Webserver auf Port 80 (nur Master!)
+WebServer server(80);
+
+// =====================[ SETUP ]=============================
 
 void setup() {
   Serial.begin(115200);
-  mesh.setDebugMsgTypes( ERROR | STARTUP );
+  delay(1000);
+  Serial.println("\n\n--- ESP32 Lampennetzwerk Start ---");
 
-  // Basis-Mesh-Initialisierung
-  mesh.init( MESH_PREFIX, MESH_PASSWORD, &userScheduler, MESH_PORT );
-  
-  if (MESH_MASTER) {
-    // Master-spezifische Initialisierungen
-    Serial.println("This is a Master Node");
-    mesh.onReceive(&masterReceiveCallback);
-    mesh.onNewConnection(&masterNewConnectionCallback);
-    mesh.onChangedConnections(&masterChangedConnectionCallback);
-    mesh.onNodeTimeAdjusted(&masterNodeTimeAdjustedCallback);
-    
-    // Master-spezifische Tasks
-    userScheduler.addTask(taskSendMessage);
-    taskSendMessage.enable();
+  if (IS_MASTER) {
+    setupAsMaster();
   } else {
-    // Slave-spezifische Initialisierungen
-    Serial.println("This is a Slave Node");
-    mesh.onReceive(&slaveReceiveCallback);
-    mesh.onNewConnection(&slaveNewConnectionCallback);
-    mesh.onChangedConnections(&slaveChangedConnectionCallback);
-    mesh.onNodeTimeAdjusted(&slaveNodeTimeAdjustedCallback);
+    setupAsSlave();
   }
 }
 
+// =====================[ MASTER-MODUS (Access Point) ]=============================
+
+void setupAsMaster() {
+  Serial.println("[MASTER] Starte Access Point...");
+
+  WiFi.softAP(SSID_MASTER, PASSWORD_MASTER);
+
+  IPAddress IP = WiFi.softAPIP();
+  Serial.print("[MASTER] Access Point IP: ");
+  Serial.println(IP);
+
+  // Webserver-Routen definieren
+  server.on("/", handleRoot);
+  server.begin();
+  Serial.println("[MASTER] Webserver gestartet.");
+}
+
+// =====================[ SLAVE-MODUS (Client) ]=============================
+
+void setupAsSlave() {
+  Serial.printf("[SLAVE #%d] Verbinde mit WLAN '%s'...\n", DEVICE_ID, SSID_MASTER);
+
+  WiFi.begin(SSID_MASTER, PASSWORD_MASTER);
+
+  uint8_t retries = 0;
+  while (WiFi.status() != WL_CONNECTED && retries < 20) {
+    delay(500);
+    Serial.print(".");
+    retries++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n[SLAVE] Verbunden!");
+    Serial.print("[SLAVE] IP-Adresse: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("\n[SLAVE] Verbindung fehlgeschlagen.");
+  }
+}
+
+// =====================[ WEBSEITE: Verbundene Clients anzeigen ]=============================
+
+void handleRoot() {
+  wifi_sta_list_t stationList;
+  wifi_sta_info_t stations[10];  // Maximale Anzahl von Clients
+  stationList.num = 0;
+  stationList.sta = stations;
+
+  String html = "<!DOCTYPE html><html><head>"
+                "<meta charset='UTF-8'>"
+                "<title>ESP32 Lampennetzwerk</title>"
+                "<style>"
+                "body { font-family: Arial, sans-serif; margin: 20px; }"
+                "h2 { color: #333; }"
+                "ul { list-style-type: none; padding: 0; }"
+                "li { margin: 10px 0; padding: 10px; background: #f0f0f0; border-radius: 5px; }"
+                "</style></head><body>"
+                "<h2>Verbundene Geräte:</h2><ul>";
+
+  if (esp_wifi_ap_get_sta_list(&stationList) == ESP_OK) {
+    for (int i = 0; i < stationList.num; i++) {
+      char macStr[18];
+      snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+               stationList.sta[i].mac[0], stationList.sta[i].mac[1],
+               stationList.sta[i].mac[2], stationList.sta[i].mac[3],
+               stationList.sta[i].mac[4], stationList.sta[i].mac[5]);
+      
+      html += "<li>Client #" + String(i + 1) + "<br>"
+              "MAC: " + String(macStr) + "<br>"
+              "RSSI: " + String(stationList.sta[i].rssi) + " dBm</li>";
+    }
+  } else {
+    html += "<li>Fehler beim Abrufen der Stationen</li>";
+  }
+
+  html += "</ul>"
+          "<p>Anzahl verbundener Geräte: " + String(WiFi.softAPgetStationNum()) + "</p>"
+          "</body></html>";
+          
+  server.send(200, "text/html", html);
+}
+
+// =====================[ LOOP ]=============================
+
 void loop() {
-  mesh.update();
-}
+  if (IS_MASTER) {
+    static unsigned long lastReport = 0;
+    if (millis() - lastReport > 3000) {
+      int clientCount = WiFi.softAPgetStationNum();
+      Serial.printf("[MASTER] Verbundene Geräte: %d\n", clientCount);
+      lastReport = millis();
+    }
+    server.handleClient();
+  }
 
-// Master-spezifische Callbacks
-void masterReceiveCallback(uint32_t from, String &msg) {
-  Serial.printf("Master received from %u msg=%s\n", from, msg.c_str());
-}
-
-void masterNewConnectionCallback(uint32_t nodeId) {
-  Serial.printf("Master: New Connection from nodeId = %u\n", nodeId);
-}
-
-void masterChangedConnectionCallback() {
-  Serial.printf("Master: Network topology changed\n");
-}
-
-void masterNodeTimeAdjustedCallback(int32_t offset) {
-  Serial.printf("Master: Time adjusted. Offset = %d\n", offset);
-}
-
-// Slave-spezifische Callbacks
-void slaveReceiveCallback(uint32_t from, String &msg) {
-  Serial.printf("Slave received from %u msg=%s\n", from, msg.c_str());
-}
-
-void slaveNewConnectionCallback(uint32_t nodeId) {
-  Serial.printf("Slave: Connected to nodeId = %u\n", nodeId);
-}
-
-void slaveChangedConnectionCallback() {
-  Serial.printf("Slave: Connection changed\n");
-}
-
-void slaveNodeTimeAdjustedCallback(int32_t offset) {
-  Serial.printf("Slave: Time adjusted. Offset = %d\n", offset);
-}
-
-void sendMessage() {
-  String msg = "Hello from " DEVICE_ID " (Node ";
-  msg += mesh.getNodeId();
-  msg += ")";
-  mesh.sendBroadcast(msg);
-  Serial.printf("Master broadcasting: %s\n", msg.c_str());
+  delay(10);
 }
