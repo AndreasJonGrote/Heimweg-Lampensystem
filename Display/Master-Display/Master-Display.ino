@@ -1,43 +1,35 @@
-/*
- * Master-Display.ino
- * 
- * Dieses Programm steuert ein ST7735 TFT-Display an und implementiert
- * grundlegende Textdarstellungsfunktionen mit Unterstützung für:
- * - Deutsche Umlaute (UTF-8 zu ASCII Konvertierung)
- * - Automatischer Zeilenumbruch
- * - Konfigurierbares Padding
- * - Verschiedene Textgrößen und Farben
- */
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7735.h>
+#include <SPI.h>
+#include <WiFi.h>
+#include <WebServer.h>
 
-#include <Adafruit_GFX.h>    // Grafik-Bibliothek für verschiedene Displays
-#include <Adafruit_ST7735.h> // Spezifische Bibliothek für ST7735 TFT-Displays
-#include <SPI.h>             // SPI-Kommunikation für Display-Ansteuerung
+// TFT Pins
+#define TFT_CS   5
+#define TFT_RST  4
+#define TFT_DC   2
 
-// Definition der Display-Pins
-#define TFT_CS     5        // Chip Select Pin
-#define TFT_RST    4        // Reset Pin
-#define TFT_DC     2        // Data/Command Pin
-
-// Initialisierung des Display-Objekts
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
 
-// Globale Layout-Einstellungen
-const int padding = 10;     // Randabstand in Pixeln
-int currentY = padding;     // Aktuelle Y-Position für Textausgabe
+// Layout
+const int padding = 10;
+int currentY = padding;
 
-/**
- * Setzt die Y-Position für die Textausgabe zurück
- * Wird verwendet, um von vorne mit dem Schreiben zu beginnen
- */
-void resetLines() {
-  currentY = padding;
-}
+// Access Point Einstellungen
+const char* ssid = "TestDisplay";
+const char* password = "12345678";
+const int channel = 6;  // Stabiler auf Apple-Geräten
+const bool hide_ssid = false;
+const int max_connection = 4;
 
-/**
- * Konvertiert deutsche Umlaute und Sonderzeichen in ASCII-Darstellung
- * @param text Der zu konvertierende Text
- * @return String mit ersetzten Umlauten
- */
+IPAddress localIP(192,168,4,1);
+IPAddress gateway(192,168,4,1);
+IPAddress subnet(255,255,255,0);
+
+// Webserver
+WebServer server(80);
+
+// UTF-8 zu ASCII für Display
 String utf8ToAscii(String text) {
   text.replace("ä", "ae");
   text.replace("ö", "oe");
@@ -51,22 +43,18 @@ String utf8ToAscii(String text) {
   return text;
 }
 
-/**
- * Zeichnet eine Textzeile mit automatischem Umbruch
- * @param text Der darzustellende Text
- * @param size Textgröße (Standard: 1)
- * @param color Textfarbe (Standard: Weiß)
- */
+// Textausgabe mit Umbruch
+void resetLines() {
+  currentY = padding;
+}
+
 void drawWrappedLine(String text, int size = 1, uint16_t color = ST77XX_WHITE) {
   String textCopy = utf8ToAscii(text);
+  int charWidth = 6 * size;
+  int maxLineWidth = tft.width() - 2 * padding;
+  int charsPerLine = maxLineWidth / charWidth;
+  int lineHeight = 8 * size + 2;
 
-  // Berechnung der Textdimensionen
-  int charWidth = 6 * size;                    // Breite eines Zeichens
-  int maxLineWidth = tft.width() - 2 * padding; // Maximale Zeilenbreite
-  int charsPerLine = maxLineWidth / charWidth;  // Zeichen pro Zeile
-  int lineHeight = 8 * size + 2;               // Zeilenhöhe mit Abstand
-
-  // Text in Zeilen aufteilen und ausgeben
   for (int i = 0; i < textCopy.length(); i += charsPerLine) {
     String line = textCopy.substring(i, min(i + charsPerLine, (int)textCopy.length()));
     tft.setTextSize(size);
@@ -77,29 +65,84 @@ void drawWrappedLine(String text, int size = 1, uint16_t color = ST77XX_WHITE) {
   }
 }
 
-/**
- * Setup-Routine: Wird einmalig beim Start ausgeführt
- * Initialisiert das Display und zeigt Beispieltext an
- */
-void setup() {
-  Serial.begin(115200);               // Seriellen Monitor initialisieren
-  
-  // Display-Initialisierung
-  tft.initR(INITR_BLACKTAB);         // Spezifische Display-Variante
-  tft.setRotation(0);                // Portrait-Modus
-  tft.fillScreen(ST77XX_BLACK);      // Bildschirm schwarz färben
-  resetLines();                      // Textposition zurücksetzen
-
-  // Beispieltext zum Testen der Funktionen
-  drawWrappedLine("Padding links & rechts – passt!", 1);
-  drawWrappedLine("Große Wörter wie Übersetzung oder äußert erscheinen korrekt.", 1);
-  drawWrappedLine("Noch mehr Text in Rot, der umbricht.", 1);
+// Webserver-Handler
+void handleRoot() {
+  String html = R"rawliteral(
+    <!DOCTYPE html>
+    <html>
+    <head><meta charset='UTF-8'><title>Display</title></head>
+    <body style='font-family:sans-serif;text-align:center;padding-top:40px'>
+      <h1>ESP32 Display</h1>
+      <p>Access Point ist aktiv.</p>
+    </body>
+    </html>
+  )rawliteral";
+  server.send(200, "text/html", html);
 }
 
-/**
- * Hauptschleife: Wird kontinuierlich ausgeführt
- * Aktuell keine Funktionalität implementiert
- */
+// Setup Webserver
+void setupWebServer() {
+  server.on("/", handleRoot);
+  server.begin();
+}
+
+// Setup WiFi
+bool setupWiFiAP() {
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  delay(500);
+
+  WiFi.mode(WIFI_AP);
+  delay(100);
+
+  bool success = WiFi.softAP(ssid, password, channel, hide_ssid, max_connection);
+  if (!success) return false;
+
+  if (!WiFi.softAPConfig(localIP, gateway, subnet)) return false;
+
+  return true;
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  tft.initR(INITR_BLACKTAB);
+  tft.setRotation(0);
+  tft.fillScreen(ST77XX_BLACK);
+  resetLines();
+  drawWrappedLine("Starte WiFi Access Point...", 1, ST77XX_YELLOW);
+
+  if (!setupWiFiAP()) {
+    drawWrappedLine("WLAN Fehler!", 2, ST77XX_RED);
+    return;
+  }
+
+  drawWrappedLine("WLAN Access Point bereit.", 1, ST77XX_GREEN);
+  drawWrappedLine(WiFi.softAPIP().toString(), 1);
+
+  setupWebServer();
+  drawWrappedLine("Webserver gestartet", 1, ST77XX_GREEN);
+
+  Serial.println("Fertig!");
+  Serial.println(WiFi.softAPIP());
+}
+
 void loop() {
-  // Keine Aktionen in der Hauptschleife
+  static unsigned long lastCheck = 0;
+  server.handleClient();
+
+  if (millis() - lastCheck > 10000) {
+    int connected = WiFi.softAPgetStationNum();
+    Serial.printf("Clients: %d\n", connected);
+
+    tft.fillRect(0, tft.height()-20, tft.width(), 20, ST77XX_BLACK);
+    tft.setCursor(padding, tft.height()-15);
+    tft.setTextSize(1);
+    tft.setTextColor(ST77XX_WHITE);
+    tft.print("Verbunden: ");
+    tft.print(connected);
+
+    lastCheck = millis();
+  }
 }
