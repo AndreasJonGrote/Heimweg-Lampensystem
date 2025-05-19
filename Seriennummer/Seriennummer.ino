@@ -2,7 +2,7 @@
 #include <Preferences.h>
 
 // Definition der Standardwerte für Geräte-ID und Version
-const char* device_id       = "A001";
+const char* device_id       = "A002";
 const char* device_version  = "0.0.1a";
 
 // Erstellen eines Preferences-Objekts für den Zugriff auf den Flash-Speicher
@@ -11,8 +11,8 @@ Preferences globals;
 void setup() {
   // Initialisierung der seriellen Kommunikation mit 115200 Baud
   Serial.begin(115200);
-  // Kurze Verzögerung, um sicherzustellen, dass die serielle Verbindung bereit ist
-  delay(500);
+  delay(1500); // Warte, bis der Monitor bereit ist
+  Serial.println("Setup gestartet...");
 
   // Öffnen des Preferences-Namespace "globals" im Lese-/Schreibmodus (false = read/write)
   globals.begin("globals", false);
@@ -42,4 +42,11 @@ void setup() {
 }
 
 // Hauptschleife - hier passiert nichts, da wir nur einmalig die Werte speichern/auslesen
-void loop() { }
+void loop() {
+  globals.begin("globals", true);  // LESEN aus dem NVS
+  String id = globals.getString("device_id", "undefined");
+  globals.end();
+
+  Serial.println("device_id vorhanden: " + id);
+  delay(500);
+}

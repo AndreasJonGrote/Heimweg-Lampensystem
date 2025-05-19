@@ -1,23 +1,39 @@
+#include <Preferences.h>
 #include <WiFi.h>
 
 // =====================[ KONFIGURATION ]======================
 
 // Rolle: true = Master (Access Point), false = Slave (Client)
-const bool IS_MASTER = false;
+const bool IS_MASTER = true;
 
-// Geräte-ID (z. B. für spätere Zuordnung)
-const int DEVICE_ID = 1;
+// NVS-Speicherobjekt & device_id als String
+Preferences globals;
+String DEVICE_ID = "UNDEFINED";
 
-// WLAN-Daten (wenn Master: eigener AP, wenn Slave: damit verbinden)
-const char* SSID_MASTER = "LAMPEN_NETZWERK";
+// WLAN-Zugangsdaten (für Master und Slave)
+const char* SSID_MASTER     = "LAMPEN_NETZWERK";
 const char* PASSWORD_MASTER = "geheim123";
+
+// =====================[ Funktionsdeklarationen ]======================
+
+bool connectToWiFi(bool isReconnect = false);
+void setupAsMaster();
+void setupAsSlave();
+void checkAndReconnectWiFi();
 
 // =====================[ SETUP ]=============================
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  Serial.println("\n\n--- ESP32 Lampennetzwerk Start ---");
+
+  // DEVICE_ID aus NVS lesen
+  globals.begin("globals", true);
+  DEVICE_ID = globals.getString("device_id", "UNDEFINED");
+  globals.end();
+
+  Serial.println("\n--- ESP32 Lampennetzwerk Start ---");
+  Serial.println("device_id: " + DEVICE_ID);
 
   if (IS_MASTER) {
     setupAsMaster();
@@ -32,85 +48,68 @@ void setupAsMaster() {
   Serial.println("[MASTER] Starte Access Point...");
 
   WiFi.softAP(SSID_MASTER, PASSWORD_MASTER);
-
   IPAddress IP = WiFi.softAPIP();
+
   Serial.print("[MASTER] Access Point IP: ");
   Serial.println(IP);
-
-  delay(500);
 }
 
 // =====================[ SLAVE-MODUS (Client) ]=============================
 
-bool connectToWiFi(bool isReconnect = false) {
+void setupAsSlave() {
+  Serial.println("[SLAVE] Initialisiere WLAN-Verbindung...");
+  connectToWiFi(); // Erste Verbindung
+}
+
+bool connectToWiFi(bool isReconnect) {
   if (!isReconnect) {
-    Serial.printf("[SLAVE #%d] Verbinde mit WLAN '%s'...\n", DEVICE_ID, SSID_MASTER);
+    Serial.printf("[SLAVE #%s] Verbinde mit WLAN '%s'...\n", DEVICE_ID.c_str(), SSID_MASTER);
   }
 
   WiFi.begin(SSID_MASTER, PASSWORD_MASTER);
-  
-  const uint8_t maxRetries = isReconnect ? 10 : 20;
-  const uint8_t retryDelay = 500; // ms
+
+  const uint8_t maxRetries = isReconnect ? 5 : 20;
+  const uint16_t retryDelay = 500;
   uint8_t retries = 0;
-  
+
   while (WiFi.status() != WL_CONNECTED && retries < maxRetries) {
     delay(retryDelay);
     Serial.print(".");
     retries++;
   }
 
-  const bool isConnected = (WiFi.status() == WL_CONNECTED);
-  
-  if (isConnected) {
-    Serial.println(isReconnect ? "\n[SLAVE] Wiederverbindung erfolgreich!" : "\n[SLAVE] Verbunden!");
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n[SLAVE] WLAN-Verbindung erfolgreich.");
     Serial.printf("[SLAVE] IP-Adresse: %s\n", WiFi.localIP().toString().c_str());
+    return true;
   } else {
-    Serial.println(isReconnect ? "\n[SLAVE] Wiederverbindung fehlgeschlagen." : "\n[SLAVE] Verbindung fehlgeschlagen.");
-  }
-  
-  return isConnected;
-}
-
-void setupAsSlave() {
-  if (!connectToWiFi()) {
-    Serial.println("[SLAVE] Initiale Verbindung fehlgeschlagen. Starte Neustart...");
-    ESP.restart();
+    Serial.println("\n[SLAVE] Verbindung fehlgeschlagen.");
+    return false;
   }
 }
 
 void checkAndReconnectWiFi() {
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[SLAVE] WLAN-Verbindung verloren. Versuche Wiederverbindung...");
-    WiFi.disconnect();
+    Serial.println("[SLAVE] WLAN getrennt. Versuche Reconnect...");
+    WiFi.disconnect(true);
     delay(1000);
-    
-    if (!connectToWiFi(true)) {
-      Serial.println("[SLAVE] Wiederverbindung fehlgeschlagen. Starte Neustart...");
-      ESP.restart();
-    }
+    connectToWiFi(true);
   }
 }
 
 // =====================[ LOOP ]=============================
 
 void loop() {
-
-  // IF IS MASTER
   if (IS_MASTER) {
-    // Anzahl der verbundenen Clients anzeigen
     static unsigned long lastReport = 0;
     if (millis() - lastReport > 3000) {
       int clientCount = WiFi.softAPgetStationNum();
       Serial.printf("[MASTER] Verbundene Geräte: %d\n", clientCount);
       lastReport = millis();
     }
-  }
-
-  // IF IS SLAVE
-  if (!IS_MASTER) {
+  } else {
     checkAndReconnectWiFi();
-    delay(5000); // Prüfe alle 5 Sekunden die Verbindung
   }
 
-  delay(10);
+  delay(10); // CPU-Entlastung
 }
