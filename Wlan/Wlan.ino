@@ -4,6 +4,7 @@
 // =====================[ KONFIGURATION ]======================
 
 const bool IS_MASTER = true;
+const bool IS_STANDALONE = false;
 
 Preferences globals;
 String DEVICE_ID = "UNDEFINED";
@@ -16,23 +17,14 @@ const int STATUS_LED_R_PIN = 27;
 const int STATUS_LED_G_PIN = 14;
 const int STATUS_LED_B_PIN = 26;
 
-// ==== Blinksteuerung ====
+// ==== Status-LED Logik ====
+const char* status_led_color = "off";  // "red", "green", "blue", "white", "off"
+bool status_led_blink = false;
 unsigned long last_blink = 0;
 bool led_on = true;
 
-// ==== Timer für loop() ====
-unsigned long last_wifi_check = 0;
-unsigned long last_master_report = 0;
-
-// =====================[ FUNKTIONSPROTOTYPEN ]======================
-
-bool connectToWiFi(bool isReconnect = false);
-void setupAsMaster();
-void setupAsSlave();
-void checkAndReconnectWiFi();
-String getDeviceId();
-void updateStatusLED(bool isMaster);
-void setColor(bool r, bool g, bool b);
+// ==== Zeitsteuerung ====
+unsigned long last_wlan_task = 0;
 
 // =====================[ SETUP ]=============================
 
@@ -40,143 +32,150 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  // LED vorbereiten
   pinMode(STATUS_LED_R_PIN, OUTPUT);
   pinMode(STATUS_LED_G_PIN, OUTPUT);
   pinMode(STATUS_LED_B_PIN, OUTPUT);
 
-  // DEVICE_ID laden
   DEVICE_ID = getDeviceId();
 
-  Serial.println("\n--- ESP32 Lampennetzwerk Start ---");
-  Serial.println("device_id: " + DEVICE_ID);
+  Serial.print(">>> Boot Device: ");
+  Serial.println(DEVICE_ID);
 
-  if (IS_MASTER) {
-    setupAsMaster();
+  Serial.print(">>> IS_MASTER: ");
+  Serial.println(IS_MASTER);
+
+  Serial.print(">>> IS_STANDALONE: ");
+  Serial.println(IS_STANDALONE);
+
+
+
+  if (IS_STANDALONE) {
+    status_led_color = "white";
+    if (IS_MASTER) {
+      status_led_blink = true;
+    }
   } else {
-    setupAsSlave();
+    if (IS_MASTER) {
+      setupAsMaster();
+      status_led_color = "green";
+      status_led_blink = true;
+    } else {
+      setupAsSlave();
+      status_led_color = "blue";
+      status_led_blink = true;
+    }
   }
+
 }
 
-// =====================[ LOOP (tickbasiert) ]=============================
+// =====================[ LOOP – Zeitbasiert ]=============================
 
 void loop() {
   unsigned long now = millis();
 
-  // 10s Takt für WLAN-Reconnect bei Slaves
-  if (!IS_MASTER && now - last_wifi_check > 10000) {
-    checkAndReconnectWiFi();
-    last_wifi_check = now;
+  // === 1. WLAN-Handling (alle 10s) ===
+  if (now - last_wlan_task >= 10000) {
+    last_wlan_task = now;
+    if (!IS_STANDALONE) {
+      if (IS_MASTER) {
+        int clientCount = WiFi.softAPgetStationNum();
+        Serial.print("Verbundene Geräte: ");
+        Serial.println(clientCount);
+
+        status_led_color = "green";
+        status_led_blink = (clientCount == 0);
+      } else {
+        bool connected = (WiFi.status() == WL_CONNECTED);
+        if (!connected) {
+          WiFi.disconnect(true);
+          delay(100);
+          connectToWiFi(true);
+        }
+
+        status_led_color = "blue";
+        status_led_blink = (WiFi.status() != WL_CONNECTED);
+      }
+    }
   }
 
-  // 10s Takt für Client-Status-Ausgabe beim Master
-  if (IS_MASTER && now - last_master_report > 10000) {
-    int clientCount = WiFi.softAPgetStationNum();
-    Serial.printf("[MASTER] Verbundene Geräte: %d\n", clientCount);
-    last_master_report = now;
-  }
+  // === 2. Status-LED in Echtzeit ===
+  statusLED();
 
-  // LED-Status immer aktuell
-  updateStatusLED(IS_MASTER);
-
-  // Platzhalter für spätere Logik:
+  // === 3. Lampenlogik (Platzhalter) ===
   // lampLogic();
 }
 
-// =====================[ MASTER ]=============================
+// =====================[ LED Funktionsblock ]=============================
 
-void setupAsMaster() {
-  Serial.println("[MASTER] Starte Access Point...");
-  WiFi.softAP(SSID_MASTER, PASSWORD_MASTER);
-  IPAddress IP = WiFi.softAPIP();
-  Serial.print("[MASTER] Access Point IP: ");
-  Serial.println(IP);
-}
-
-// =====================[ SLAVE ]=============================
-
-void setupAsSlave() {
-  Serial.println("[SLAVE] Initialisiere WLAN-Verbindung...");
-  connectToWiFi(); // Initialer Versuch
-}
-
-bool connectToWiFi(bool isReconnect) {
-  if (!isReconnect) {
-    Serial.printf("[SLAVE #%s] Verbinde mit WLAN '%s'...\n", DEVICE_ID.c_str(), SSID_MASTER);
-  }
-
-  WiFi.begin(SSID_MASTER, PASSWORD_MASTER);
-
-  const uint8_t maxRetries = isReconnect ? 5 : 20;
-  const uint16_t retryDelay = 500;
-  uint8_t retries = 0;
-
-  while (WiFi.status() != WL_CONNECTED && retries < maxRetries) {
-    delay(retryDelay);
-    Serial.print(".");
-    retries++;
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n[SLAVE] WLAN-Verbindung erfolgreich.");
-    Serial.printf("[SLAVE] IP-Adresse: %s\n", WiFi.localIP().toString().c_str());
-    return true;
-  } else {
-    Serial.println("\n[SLAVE] Verbindung fehlgeschlagen.");
-    return false;
-  }
-}
-
-void checkAndReconnectWiFi() {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[SLAVE] WLAN getrennt. Versuche Reconnect...");
-    WiFi.disconnect(true);
-    delay(1000);
-    connectToWiFi(true);
-  }
-}
-
-// =====================[ NVS: DEVICE_ID ]=============================
-
-String getDeviceId() {
-  String id = "UNDEFINED";
-  globals.begin("globals", true);
-  if (globals.isKey("device_id")) {
-    id = globals.getString("device_id");
-    if (id.length() == 0) id = "UNDEFINED";
-  }
-  globals.end();
-  return id;
-}
-
-// =====================[ LED-Statusanzeige ]=============================
-
-void updateStatusLED(bool isMaster) {
+void statusLED() {
   bool r = false, g = false, b = false;
-  bool blink = false;
 
-  if (isMaster) {
-    g = true;
-    blink = (WiFi.softAPgetStationNum() == 0);
-  } else {
-    b = true;
-    blink = (WiFi.status() != WL_CONNECTED);
-  }
+  if (strcmp(status_led_color, "red") == 0)    r = true;
+  if (strcmp(status_led_color, "green") == 0)  g = true;
+  if (strcmp(status_led_color, "blue") == 0)   b = true;
+  if (strcmp(status_led_color, "white") == 0)  { r = true; g = true; b = true; }
 
-  if (blink) {
+  bool visible = true;
+  if (status_led_blink) {
     if (millis() - last_blink > 1000) {
       led_on = !led_on;
       last_blink = millis();
     }
-  } else {
-    led_on = true;
+    visible = led_on;
   }
 
-  setColor(led_on ? r : false, led_on ? g : false, led_on ? b : false);
+  setColor(visible ? r : false, visible ? g : false, visible ? b : false);
 }
 
 void setColor(bool r, bool g, bool b) {
   digitalWrite(STATUS_LED_R_PIN, r ? HIGH : LOW);
   digitalWrite(STATUS_LED_G_PIN, g ? HIGH : LOW);
   digitalWrite(STATUS_LED_B_PIN, b ? HIGH : LOW);
+}
+
+// =====================[ WLAN & DEVICE_ID ]=============================
+
+void setupAsMaster() {
+  Serial.println("Starte Access Point...");
+  WiFi.softAP(SSID_MASTER, PASSWORD_MASTER);
+  IPAddress IP = WiFi.softAPIP();
+  Serial.print("IP: ");
+  Serial.println(IP);
+}
+
+void setupAsSlave() {
+  Serial.println("[SLAVE] WLAN verbinden...");
+  connectToWiFi(false);
+}
+
+bool connectToWiFi(bool isReconnect) {
+  if (!isReconnect) {
+    Serial.print("[SLAVE #");
+    Serial.print(DEVICE_ID);
+    Serial.print("] Verbinde mit ");
+    Serial.println(SSID_MASTER);
+  }
+
+  WiFi.begin(SSID_MASTER, PASSWORD_MASTER);
+
+  const int maxRetries = isReconnect ? 5 : 20;
+  for (int i = 0; i < maxRetries; i++) {
+    delay(500);
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.print("[SLAVE] Verbunden mit IP: ");
+      Serial.println(WiFi.localIP());
+      return true;
+    }
+    Serial.print(".");
+  }
+
+  Serial.println("\n[SLAVE] Verbindung fehlgeschlagen.");
+  return false;
+}
+
+String getDeviceId() {
+  globals.begin("globals", true);
+  String id = globals.getString("device_id", "UNDEFINED");
+  globals.end();
+  return id;
 }
