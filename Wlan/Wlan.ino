@@ -3,7 +3,7 @@
 
 // =====================[ KONFIGURATION ]======================
 
-const bool IS_MASTER = false;
+const bool IS_MASTER = true;
 
 Preferences globals;
 String DEVICE_ID = "UNDEFINED";
@@ -31,7 +31,7 @@ void setupAsMaster();
 void setupAsSlave();
 void checkAndReconnectWiFi();
 String getDeviceId();
-void updateStatusLED(bool isMaster, bool isConnected);
+void updateStatusLED(bool isMaster);
 void setColor(bool r, bool g, bool b);
 
 // =====================[ SETUP ]=============================
@@ -77,10 +77,9 @@ void loop() {
   }
 
   // LED-Status immer aktuell
-  bool isConnected = (WiFi.status() == WL_CONNECTED);
-  updateStatusLED(IS_MASTER, isConnected);
+  updateStatusLED(IS_MASTER);
 
-  // Platzhalter für deine spätere Lampenlogik
+  // Platzhalter für spätere Logik:
   // lampLogic();
 }
 
@@ -152,7 +151,7 @@ String getDeviceId() {
 
 // =====================[ LED-Statusanzeige ]=============================
 
-void updateStatusLED(bool isMaster, bool isConnected) {
+void updateStatusLED(bool isMaster) {
   bool r = false, g = false, b = false;
   bool blink = false;
 
@@ -161,7 +160,7 @@ void updateStatusLED(bool isMaster, bool isConnected) {
     blink = (WiFi.softAPgetStationNum() == 0);
   } else {
     b = true;
-    blink = !isConnected;
+    blink = (WiFi.status() != WL_CONNECTED);
   }
 
   if (blink) {
