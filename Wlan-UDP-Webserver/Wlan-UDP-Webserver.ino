@@ -1,10 +1,11 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#include <WebServer.h>
 
 // =====================[ DEVICE SETTINGS ]======================
 
-bool IS_MASTER = true;
+bool IS_MASTER = false;
 bool IS_STANDALONE = false;
 bool IS_SLAVE = false ;
 
@@ -19,6 +20,92 @@ const char* PASSWORD_MASTER = "geheim123";
 IPAddress master_ip(192, 168, 4, 1);
 
 unsigned long last_wlan_task = 0;
+
+// =====================[ UDP ]======================
+
+WiFiUDP udp;
+const uint16_t UDP_PORT = 4210;
+
+// ==== Maximale Anzahl Slaves ====
+const int MAX_SLAVES = 25;
+
+// ==== Slave-Datenstruktur ====
+struct SlaveInfo {
+  String id;
+  IPAddress ip;
+};
+
+// ==== Array zur Speicherung ====
+SlaveInfo slaves[MAX_SLAVES];
+int slave_count = 0;
+
+// =====================[ WEBSERVER ]======================
+
+WebServer server(80);
+
+const char* htmlPage = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="refresh" content="30">
+  <title>ESP32 Übersicht</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #aaa; padding: 8px; text-align: center; }
+    button { padding: 5px 10px; }
+  </style>
+  <script>
+    function sendCmd(ip, cmd) {
+      fetch(`/cmd?ip=${ip}&cmd=${cmd}`)
+        .then(res => res.text())
+        .then(msg => alert("Antwort: " + msg))
+        .catch(err => alert("Fehler: " + err));
+    }
+  </script>
+</head>
+<body>
+  <h1>ESP32 Geräte im Netzwerk</h1>
+  <table>
+    <thead>
+      <tr><th>Device ID</th><th>IP</th><th>Befehl 1</th><th>Befehl 2</th><th>Befehl 3</th></tr>
+    </thead>
+    <tbody>
+      %SLAVE_ROWS%
+    </tbody>
+  </table>
+</body>
+</html>
+)rawliteral";
+
+String generateSlaveRows() {
+  String rows = "";
+
+  // === Master (eigene Zeile) ===
+  String masterIP = WiFi.softAPIP().toString();
+  rows += "<tr><td>" + DEVICE_ID + " (Master)</td><td>" + masterIP + "</td>";
+  rows += "<td><button onclick=\"sendCmd('" + masterIP + "', 'reboot')\">Reboot</button></td>";
+  rows += "<td><button onclick=\"sendCmd('" + masterIP + "', 'setcolor:0,255,0')\">Grün</button></td>";
+  rows += "<td><button onclick=\"sendCmd('" + masterIP + "', 'setcolor:0,0,255')\">Blau</button></td></tr>";
+
+  // === Slaves ===
+  for (int i = 0; i < slave_count; i++) {
+    String ip = slaves[i].ip.toString();
+    rows += "<tr><td>" + slaves[i].id + "</td><td>" + ip + "</td>";
+    rows += "<td><button onclick=\"sendCmd('" + ip + "', 'reboot')\">Reboot</button></td>";
+    rows += "<td><button onclick=\"sendCmd('" + ip + "', 'cmd2')\">CMD2</button></td>";
+    rows += "<td><button onclick=\"sendCmd('" + ip + "', 'cmd3')\">CMD3</button></td></tr>";
+  }
+
+  return rows;
+}
+
+void handleRoot() {
+  String page = htmlPage;
+  page.replace("%SLAVE_ROWS%", generateSlaveRows());
+  server.send(200, "text/html", page);
+}
 
 // =====================[ PUSH BUTTON ]======================
 
@@ -51,23 +138,7 @@ void triggerFastBlink() {
 }
 
 
-// =====================[ UDP ]======================
 
-WiFiUDP udp;
-const uint16_t UDP_PORT = 4210;
-
-// ==== Maximale Anzahl Slaves ====
-const int MAX_SLAVES = 25;
-
-// ==== Slave-Datenstruktur ====
-struct SlaveInfo {
-  String id;
-  IPAddress ip;
-};
-
-// ==== Array zur Speicherung ====
-SlaveInfo slaves[MAX_SLAVES];
-int slave_count = 0;
 
 // =====================[ SETUP ]=============================
 
@@ -104,6 +175,7 @@ void setup() {
     }
     Serial.println("STANDALONE");
   } else {
+
     if (IS_MASTER) {
       status_led_color = "green";
       Serial.println("MASTER");
@@ -114,6 +186,40 @@ void setup() {
       Serial.println("SLAVE");
       setupAsSlave();
     }
+    
+    server.on("/", handleRoot);
+
+    server.on("/cmd", []() {
+      if (server.hasArg("ip") && server.hasArg("cmd")) {
+        String ipStr = server.arg("ip");
+        String cmd = server.arg("cmd");
+        IPAddress targetIP;
+        
+        if (targetIP.fromString(ipStr)) {
+          if (targetIP == WiFi.softAPIP()) {
+            // Lokale Ausführung direkt ohne UDP
+            Serial.println(">>> Lokaler Befehl: " + cmd);
+            if (cmd == "reboot") {
+              delay(100);
+              ESP.restart();
+            }
+            // Weitere Kommandos hier abfangen
+          } else {
+            sendUdpCommand(targetIP, cmd);
+          }
+
+          server.send(200, "text/plain", "Befehl gesendet.");
+        } else {
+          server.send(400, "text/plain", "Ungültige IP-Adresse.");
+        }
+      } else {
+        server.send(400, "text/plain", "Fehlende Parameter.");
+      }
+    });
+
+    server.begin();
+    Serial.println("HTTP Server gestartet");
+  
   }
 
 }
@@ -127,9 +233,10 @@ void loop() {
   // === 1. WLAN-Handling ===
   if (!IS_STANDALONE) {
 
-    if (IS_MASTER) {
+    server.handleClient();
+    checkUdpMessages();
 
-      checkUdpMessages();
+    if (IS_MASTER) {
 
       if (now - last_wlan_task >= 15000 || last_wlan_task == 0) {
         last_wlan_task = now;
@@ -172,6 +279,7 @@ void loop() {
     }
 
   }
+
   // === 2. Check Status ===
   checkStatus();
 
@@ -260,6 +368,10 @@ void setupAsMaster() {
 void setupAsSlave() {
   Serial.println("[SLAVE] WLAN verbinden...");
   connectToWiFi(false);
+
+  udp.begin(UDP_PORT);
+  Serial.print("[MASTER] UDP Listening on Port ");
+  Serial.println(UDP_PORT);
 }
 
 bool connectToWiFi(bool isReconnect) {
@@ -297,27 +409,41 @@ void sendUdpPing() {
   udp.endPacket();
 }
 
+void sendUdpCommand(IPAddress ip, String command) {
+  udp.beginPacket(ip, UDP_PORT);
+  udp.print("command:" + command);
+  udp.endPacket();
+
+  Serial.print(">>> UDP-Befehl an ");
+  Serial.print(ip);
+  Serial.print(": ");
+  Serial.println(command);
+}
+
 void checkUdpMessages() {
   int packetSize = udp.parsePacket();
-  if (packetSize) {
+  if (packetSize > 0) {
 
     triggerFastBlink();
 
     char incoming[64];
     int len = udp.read(incoming, sizeof(incoming) - 1);
-    if (len > 0) incoming[len] = '\0';
+    if (len > 0) {
+      incoming[len] = '\0'; // Nullterminierung
+    }
 
     String message = String(incoming);
     IPAddress senderIP = udp.remoteIP();
 
-    Serial.print("[MASTER] UDP empfangen: ");
+    Serial.print("[UDP] Nachricht empfangen von ");
+    Serial.print(senderIP);
+    Serial.print(": ");
     Serial.println(message);
 
-    // Nur reagieren auf "ping:<DEVICE_ID>"
+    // === PING-Nachricht ===
     if (message.startsWith("ping:")) {
-      String id = message.substring(5);  // alles nach "ping:"
+      String id = message.substring(5);  // ID extrahieren
 
-      // Prüfen, ob ID schon vorhanden ist
       bool exists = false;
       for (int i = 0; i < slave_count; i++) {
         if (slaves[i].id == id) {
@@ -327,17 +453,43 @@ void checkUdpMessages() {
         }
       }
 
-      // Neue ID speichern, falls noch nicht vorhanden
       if (!exists && slave_count < MAX_SLAVES) {
         slaves[slave_count].id = id;
         slaves[slave_count].ip = senderIP;
         slave_count++;
 
-        Serial.print("[MASTER] Neuer Slave registriert: ");
+        Serial.print("[UDP] Neuer Slave registriert: ");
         Serial.print(id);
-        Serial.print(" > ");
+        Serial.print(" @ ");
         Serial.println(senderIP);
       }
+    }
+
+    // === COMMAND-Verarbeitung ===
+    else if (message.startsWith("command:")) {
+      String cmd = message.substring(8);
+
+      Serial.print("[UDP] Befehl erhalten: ");
+      Serial.println(cmd);
+
+      // Zentrale Befehlsverarbeitung
+      if (cmd == "reboot") {
+        Serial.println(">>> Reboot wird ausgeführt...");
+        delay(100);
+        ESP.restart();
+      }
+
+      // Weitere Befehle hier ergänzen:
+      // else if (cmd == "setcolor:0,255,0") { ... }
+
+      else {
+        Serial.println(">>> Unbekannter Befehl");
+      }
+    }
+
+    // === Unbekanntes Format ===
+    else {
+      Serial.println("[UDP] Unbekannte Nachricht empfangen.");
     }
   }
 }
@@ -383,6 +535,10 @@ void checkStatus() {
     statusLED(); 
   }
 }
+
+
+// =====================[ WEBSERVER ]=============================
+
 
 
 // =====================[ CONFIG VARS ]=============================
