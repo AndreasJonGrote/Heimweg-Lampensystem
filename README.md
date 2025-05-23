@@ -4,6 +4,59 @@ Ein vernetztes LED-Beleuchtungssystem basierend auf ESP32-Mikrocontrollern. Das 
 
 ## Funktionsweise
 
+### Betriebsmodi & Rollenvergabe
+- Automatische Rollenverteilung beim Boot:
+  1. DIP-Schalter werden ausgelesen
+  2. WLAN-Scan nach existierendem Master
+  3. Rollenzuweisung nach folgender Logik:
+     - Standalone (DIP 1 = ON): Arbeitet komplett autark und ohne WLAN
+     - Master (DIP 2 = ON): 
+       - Wird automatisch Standalone wenn bereits Master existiert
+         **ODER**
+       - Wird Master wenn kein anderer Master gefunden:
+         - Öffnet Access Point "LAMPEN_NETZWERK"
+         - Feste IP: 192.168.4.1
+         - Verwaltet bis zu 25 Slaves:
+           - Speichert Device-ID und IP
+           - Überwacht Online-Status (Timeout nach 29s)
+           - Speichert aktuelle Konfiguration (Modus, Farbe, Helligkeit)
+           - Bietet Webinterface zur Steuerung
+         - UDP-Kommunikation (Port 4210):
+           - Empfängt Status-Updates der Slaves
+           - Sendet Befehle an Slaves (Reboot, Modus, Farbe)
+           - Bestätigt Empfang durch Fast-Blink
+         
+     - Slave (DIP 1 & DIP 2 = OFF):
+       - Sucht und verbindet sich mit "LAMPEN_NETZWERK"
+       - Erhält IP vom Master (DHCP)
+       - UDP-Kommunikation (Port 4210):
+           - Sendet alle 15s Status-Updates:
+             - Device-ID
+             - Aktueller Modus (dynamisch/statisch)
+             - Aktuelle Farbe
+             - Sensor-Modus
+           - Empfängt und verarbeitet Master-Befehle
+           - Bestätigt Empfang durch Fast-Blink
+       - Automatischer Reconnect bei Verbindungsverlust
+
+- Status-LED Signalisierung:
+  - Rot: Fehler/Reset
+  - Grün: Master (blinkt wenn keine Slaves)
+  - Blau: Slave (blinkt wenn keine Verbindung)
+  - Weiß: Standalone (blinkt wenn erzwungen)
+  - Schnelles Blinken: UDP Austausch
+
+### Push-Button Funktionen
+- Visuelles Feedback während des Drückens:
+  - Status-LED leuchtet durchgehend rot
+- Langes Drücken (< 1 Sekunde) [TODO]:
+  - Misst Abstand zum Boden
+  - Setzt Bewegungserkennungs-Schwellwert (Distanz - 50cm)
+  - Fast-Blink Bestätigung nach Messung
+- Sehr langes Drücken (5 Sekunden):
+  - System-Reboot
+  - Fast-Blink Bestätigung vor Neustart [TODO]
+
 ### Netzwerk-Architektur
 - Ein ESP32 fungiert als Master (Access Point)
 - Weitere ESPs verbinden sich als Slaves
