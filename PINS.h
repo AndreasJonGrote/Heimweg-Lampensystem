@@ -20,3 +20,9 @@ const int STATUS_LED_B_PIN = 26;
 // ==== BUTTONS ====
 const int BUTTON_PUSH_PIN = 19; // Push Button – Reboot
 
+// ==== TBA: Vibrationsmotor ====
+const int VIBRATION_MOTOR_PIN = 0;
+
+// ==== TBA: Mikrofon (MAX9814 AGC) ====
+const int MIC_PIN = 0;
+

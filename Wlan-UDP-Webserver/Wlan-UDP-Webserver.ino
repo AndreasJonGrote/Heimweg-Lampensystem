@@ -5,7 +5,7 @@
 
 // =====================[ DEVICE SETTINGS ]======================
 
-bool IS_MASTER = false;
+bool IS_MASTER = true;
 bool IS_STANDALONE = false;
 bool IS_SLAVE = false ;
 
@@ -31,8 +31,17 @@ const int MAX_SLAVES = 25;
 
 // ==== Slave-Datenstruktur ====
 struct SlaveInfo {
-  String id;
-  IPAddress ip;
+  String id;                // DEVICE ID
+  IPAddress ip;             // letzte bekannte IP
+  unsigned long lastSeen;   // Zeitpunkt der letzten Nachricht (millis)
+
+  bool dynamicMode;         // true = auf Sensorik reagieren
+  uint8_t staticBrightness; // 0–90 (%), nur aktiv bei !dynamicMode
+  uint8_t staticColorR;     // RGB-Farbe für statisches Licht
+  uint8_t staticColorG;
+  uint8_t staticColorB;
+  bool dynamicColor;        // true = Farbwechsel aktiv (nur bei dynamicMode)
+  String sensorMode;        // "ultrasound", "mic", "both"
 };
 
 // ==== Array zur Speicherung ====
@@ -136,9 +145,6 @@ void triggerFastBlink() {
   fast_blink_count = 0;
   led_on = false;  // optional für sauberen Start
 }
-
-
-
 
 // =====================[ SETUP ]=============================
 
@@ -244,6 +250,23 @@ void loop() {
         Serial.print("Verbundene Geräte: ");
         Serial.println(clientCount);
 
+        // === Alte Slaves entfernen ===
+        unsigned long now = millis();
+        for (int i = 0; i < slave_count; ) {
+          if (now - slaves[i].lastSeen > 29000) {
+            Serial.print("[INFO] Slave entfernt (Timeout): ");
+            Serial.println(slaves[i].id);
+
+            // Nachrücklogik: letzten Eintrag nach vorne holen
+            for (int j = i; j < slave_count - 1; j++) {
+              slaves[j] = slaves[j + 1];
+            }
+            slave_count--;
+          } else {
+            i++;  // Nur erhöhen, wenn nicht gelöscht wurde
+          }
+        }
+
         // === Ausgabe der bekannten Slaves ===
         Serial.println(">>> Registrierte Slaves:");
         for (int i = 0; i < slave_count; i++) {
@@ -252,12 +275,13 @@ void loop() {
           Serial.print(" | IP: ");
           Serial.println(slaves[i].ip);
         }
+
         if (slave_count == 0) {
           Serial.println(" Keine Slaves registriert.");
         }
 
         status_led_color = "green";
-        status_led_blink = (clientCount == 0);
+        status_led_blink = (slave_count == 0);
       }
     }
 
@@ -270,7 +294,7 @@ void loop() {
           delay(100);
           connectToWiFi(true);
         } else {
-          sendUdpPing();
+          sendUdpStatus();
         }
 
         status_led_color = "blue";
@@ -400,12 +424,30 @@ bool connectToWiFi(bool isReconnect) {
 }
 
 // =====================[ UDP ]=============================
-void sendUdpPing() {
-
+void sendUdpStatus() {
   triggerFastBlink();
 
+  // Beispielwerte (später dynamisch befüllen!)
+  bool dynamicMode = false;
+  bool dynamicColor = false;
+  uint8_t staticColorR = 0;
+  uint8_t staticColorG = 0;
+  uint8_t staticColorB = 0;
+  String sensorMode = "mic";  // "mic", "ultra", "both"
+
+  String payload = "status:";
+  payload += DEVICE_ID;
+  payload += ",";
+  payload += dynamicMode ? "1" : "0";
+  payload += ",";
+  payload += dynamicColor ? "1" : "0";
+  payload += ",";
+  payload += String(staticColorR) + "," + String(staticColorG) + "," + String(staticColorB);
+  payload += ",";
+  payload += sensorMode;
+
   udp.beginPacket(master_ip, UDP_PORT);
-  udp.print("ping:" + DEVICE_ID);
+  udp.print(payload);
   udp.endPacket();
 }
 
@@ -440,28 +482,62 @@ void checkUdpMessages() {
     Serial.print(": ");
     Serial.println(message);
 
-    // === PING-Nachricht ===
-    if (message.startsWith("ping:")) {
-      String id = message.substring(5);  // ID extrahieren
+    // === STATUS-Nachricht ===
+    if (message.startsWith("status:")) {
+      String payload = message.substring(7);  // Alles nach "status:"
 
-      bool exists = false;
-      for (int i = 0; i < slave_count; i++) {
-        if (slaves[i].id == id) {
-          slaves[i].ip = senderIP;  // IP aktualisieren
-          exists = true;
+      // Zerlegen der Daten
+      int idx = 0;
+      String parts[8];
+      while (payload.length() > 0 && idx < 8) {
+        int sep = payload.indexOf(',');
+        if (sep == -1) {
+          parts[idx++] = payload;
           break;
+        } else {
+          parts[idx++] = payload.substring(0, sep);
+          payload = payload.substring(sep + 1);
         }
       }
 
-      if (!exists && slave_count < MAX_SLAVES) {
-        slaves[slave_count].id = id;
-        slaves[slave_count].ip = senderIP;
-        slave_count++;
+      if (idx >= 7) {
+        String id = parts[0];
+        bool exists = false;
 
-        Serial.print("[UDP] Neuer Slave registriert: ");
-        Serial.print(id);
-        Serial.print(" @ ");
-        Serial.println(senderIP);
+        for (int i = 0; i < slave_count; i++) {
+          if (slaves[i].id == id) {
+            slaves[i].ip = senderIP;
+            slaves[i].lastSeen = millis();
+            slaves[i].dynamicMode = parts[1] == "1";
+            slaves[i].dynamicColor = parts[2] == "1";
+            slaves[i].staticColorR = parts[3].toInt();
+            slaves[i].staticColorG = parts[4].toInt();
+            slaves[i].staticColorB = parts[5].toInt();
+            slaves[i].sensorMode = parts[6];
+            exists = true;
+            break;
+          }
+        }
+
+        if (!exists && slave_count < MAX_SLAVES) {
+          int i = slave_count++;
+          slaves[i].id = parts[0];
+          slaves[i].ip = senderIP;
+          slaves[i].lastSeen = millis();
+          slaves[i].dynamicMode = parts[1] == "1";
+          slaves[i].dynamicColor = parts[2] == "1";
+          slaves[i].staticColorR = parts[3].toInt();
+          slaves[i].staticColorG = parts[4].toInt();
+          slaves[i].staticColorB = parts[5].toInt();
+          slaves[i].sensorMode = parts[6];
+
+          Serial.print("[UDP] Neuer Slave registriert: ");
+          Serial.print(parts[0]);
+          Serial.print(" @ ");
+          Serial.println(senderIP);
+        }
+      } else {
+        Serial.println("[UDP] Ungültige STATUS-Nachricht empfangen");
       }
     }
 
