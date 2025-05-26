@@ -91,8 +91,8 @@ String generateSlaveRows() {
   String masterIP = WiFi.softAPIP().toString();
   rows += "<tr><td>" + DEVICE_ID + " (Master)</td><td>" + masterIP + "</td>";
   rows += "<td><button onclick=\"sendCmd('" + masterIP + "', 'reboot')\">Reboot</button></td>";
-  rows += "<td><button onclick=\"sendCmd('" + masterIP + "', 'cmd2')\">CMD2</button></td>";
-  rows += "<td><button onclick=\"sendCmd('" + masterIP + "', 'cmd3')\">CMD3</button></td></tr>";
+  rows += "<td><button onclick=\"sendCmd('" + masterIP + "', 'setcolor:0,255,0')\">Grün</button></td>";
+  rows += "<td><button onclick=\"sendCmd('" + masterIP + "', 'setcolor:0,0,255')\">Blau</button></td></tr>";
 
   // === Slaves ===
   for (int i = 0; i < slave_count; i++) {
@@ -184,7 +184,7 @@ void setup() {
   pinMode(STATUS_LED_G_PIN, OUTPUT);
   pinMode(STATUS_LED_B_PIN, OUTPUT);
 
-  // BOOT STATUS LED COLOR
+  // BOOT COLOR
   setColor(true, false, true);
 
   // Device ID
