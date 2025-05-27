@@ -1,101 +1,156 @@
-// Mikrofon-Pin (OUT des MAX9814 an GPIO 34)
-#define MIC_PIN 34
+// ----------------------------------------------------
+// Mikrofonmodul für ESP32 mit MAX9814
+// Unterstützt:
+// - Klatscherkennung mit Intensität
+// - Gleitenden Lautstärkepegel (smoothLevel)
+// - Langfristigen Raumpegel (15s Durchschnitt)
+// Alle Werte normalisiert (0.0–1.0)
+// ----------------------------------------------------
 
-// Länge des Messfensters (wie lange Pegel gesammelt werden, in Millisekunden)
-const int sampleWindow = 30;
+#define MIC_PIN 34  // ADC-Eingang für MAX9814
 
-// Schwellenwerte für Klatscherkennung
-const int DROP_THRESHOLD = 600;       // Der Signalwert muss nach dem Peak um mindestens diesen Wert abfallen
-const int CLAP_COOLDOWN = 400;        // Zeit in ms, wie lange nach einem Klatscher keine weitere Erkennung erfolgen soll
+// === Einstellwerte ===
+const int mic_sampleWindow = 30;                // Messdauer in ms
+const unsigned long mic_cooldownTime = 1500;    // Mindestabstand zwischen Klatschern
+const float mic_clapThresholdFactor = 0.9;      // Prozent vom MaxPeak für Erkennung
+const int mic_impulseDelta = 400;               // Mindeständerung zur letzten Messung
+const float mic_maxDecayFactor = 0.98;          // maxPeak sinkt langsam zurück
 
-// Raumpegel-Mittelwert alle 15 Sekunden berechnen
-const unsigned long AVERAGE_DURATION = 15000;
+// === Zustand ===
+int mic_maxPeak = 1000;
+int mic_lastPeak = 0;
+unsigned long mic_lastClapTime = 0;
+unsigned long mic_lastSampleTime = 0;
 
-// Zustände der Klatscherkennung
-enum ClapState { IDLE, PEAK_DETECTED };
-ClapState state = IDLE;
+// === Gleitender Mittelwert ===
+const int mic_smoothBufferSize = 10;
+float mic_smoothBuffer[mic_smoothBufferSize];
+int mic_smoothIndex = 0;
+float mic_smoothSum = 0;
+float mic_smoothLevel = 0.0;
 
-int lastPeak = 0;                     // Speichert den letzten erkannten Spitzenwert
-int maxPeak = 1000;                   // Dynamischer Maximalwert, an dem sich die Klatscherkennung orientiert
-float clapThresholdFactor = 0.90;     // Klatscher müssen 90 % oder mehr des höchsten bisherigen Peaks haben
+// === 15s Durchschnittspegel ===
+unsigned long mic_avgStartTime = 0;
+unsigned long mic_avgSamples = 0;
+unsigned long mic_avgSum = 0;
+const unsigned long mic_averageWindow = 15000;
 
-unsigned long lastClapTime = 0;       // Zeitpunkt des letzten Klatschereignisses
-unsigned long averageStartTime = 0;   // Startzeitpunkt des aktuellen 15s-Durchschnittsintervalls
-unsigned long averageSamples = 0;     // Anzahl gemessener Samples im aktuellen Intervall
-unsigned long averageSum = 0;         // Summe aller Peaks im Intervall zur Mittelwertbildung
+// === ClapEvent-Struktur ===
+struct mic_ClapEvent {
+  bool triggered;     // true, wenn Klatscher erkannt
+  float intensity;    // normalisierter Peak (0.0–1.0)
+};
 
+mic_ClapEvent mic_lastClap = { false, 0.0 };
+
+// === SETUP ===
 void setup() {
-  Serial.begin(115200);               // Serielle Ausgabe starten
-  averageStartTime = millis();        // Startzeit für Mittelwert setzen
-  Serial.println("--- Mikrofonanalyse gestartet (dynamische Schwelle) ---");
+  Serial.begin(115200);
+  mic_avgStartTime = millis();
+  mic_lastSampleTime = millis();
+  Serial.println("🎤 mic_update() aktiv – modular & robust");
 }
 
+// === LOOP ===
 void loop() {
-  // ➤ 1. Kurzzeit-Messung der Lautstärke (Peak-to-Peak)
-  unsigned long startMillis = millis();
-  int signalMin = 4095;               // Startwert für Minimum (höchstmöglicher ADC-Wert)
-  int signalMax = 0;                  // Startwert für Maximum
+  mic_update();  // Aufruf im Hauptloop immer nötig
+}
 
-  // Sammle in kurzer Zeit den Maximal- und Minimalwert des Signals
-  while (millis() - startMillis < sampleWindow) {
-    int sample = analogRead(MIC_PIN);  // Lese Rohwert vom Mikrofon
-    if (sample > signalMax) signalMax = sample;
-    if (sample < signalMin) signalMin = sample;
+// === Messung & Verarbeitung ===
+void mic_update() {
+  unsigned long currentTime = millis();
+
+  if (currentTime - mic_lastSampleTime >= mic_sampleWindow) {
+    mic_lastSampleTime = currentTime;
+
+    // --- Einzelmessung durchführen ---
+    int signalMin = 4095;
+    int signalMax = 0;
+    long signalSum = 0;
+    int samples = 0;
+
+    unsigned long start = millis();
+    while (millis() - start < mic_sampleWindow) {
+      int sample = analogRead(MIC_PIN);
+      signalSum += sample;
+      if (sample < signalMin) signalMin = sample;
+      if (sample > signalMax) signalMax = sample;
+      samples++;
+    }
+
+    int peakToPeak = signalMax - signalMin;
+    float avg = (float)signalSum / samples;
+
+    if (peakToPeak > mic_maxPeak) mic_maxPeak = peakToPeak;
+    mic_maxPeak *= mic_maxDecayFactor;
+    if (mic_maxPeak < 300) mic_maxPeak = 300;
+
+    float normalizedPeak = (float)peakToPeak / mic_maxPeak;
+    normalizedPeak = constrain(normalizedPeak, 0.0, 1.0);
+
+    // --- Gleitender Smooth-Level aktualisieren ---
+    mic_smoothSum -= mic_smoothBuffer[mic_smoothIndex];
+    mic_smoothBuffer[mic_smoothIndex] = normalizedPeak;
+    mic_smoothSum += normalizedPeak;
+    mic_smoothIndex = (mic_smoothIndex + 1) % mic_smoothBufferSize;
+    mic_smoothLevel = mic_smoothSum / mic_smoothBufferSize;
+
+    // --- 15s Raumpegel (PeakSum) ---
+    mic_avgSum += peakToPeak;
+    mic_avgSamples++;
+
+    if (millis() - mic_avgStartTime >= mic_averageWindow) {
+      float avg15s = (float)mic_avgSum / mic_avgSamples;
+      Serial.print("🌡 Raumpegel (15s): ");
+      Serial.println((int)avg15s);
+      mic_avgStartTime = millis();
+      mic_avgSum = 0;
+      mic_avgSamples = 0;
+    }
+
+    // --- Klatscherkennung ---
+    int delta = peakToPeak - mic_lastPeak;
+    mic_lastPeak = peakToPeak;
+
+    mic_lastClap.triggered = false;
+    mic_lastClap.intensity = 0.0;
+
+    if (
+      peakToPeak > (int)(mic_maxPeak * mic_clapThresholdFactor) &&
+      delta > mic_impulseDelta &&
+      millis() - mic_lastClapTime > mic_cooldownTime
+    ) {
+      mic_lastClap.triggered = true;
+      mic_lastClap.intensity = normalizedPeak;
+      mic_lastClapTime = millis();
+    }
   }
+}
 
-  int peakToPeak = signalMax - signalMin;  // Differenz = Lautstärke/Amplitude
+// === Öffentliche Schnittstelle ===
 
-  // ➤ 2. Automatische Anpassung des Maximalwerts
-  // Wenn der aktuelle Wert höher ist als alle bisher gemessenen, aktualisiere den Maximalwert
-  if (peakToPeak > maxPeak) {
-    maxPeak = peakToPeak;
-    Serial.print("⚙️ Neuer Maximalwert erkannt: ");
-    Serial.println(maxPeak);
-  }
+/**
+ * Gibt den aktuellen Smooth-Lautstärkepegel (0.0–1.0) zurück.
+ * Ideal für Helligkeitssteuerung im Modus "smooth".
+ */
+float mic_getSmoothLevel() {
+  return mic_smoothLevel;
+}
 
-  // Schwelle für Klatscherkennung auf Basis des höchsten Peaks
-  int dynamicThreshold = (int)(maxPeak * clapThresholdFactor);
+/**
+ * Gibt zurück, ob ein Klatscher erkannt wurde und wie stark er war.
+ * - triggered: true, wenn Klatscher im aktuellen Fenster erkannt
+ * - intensity: 0.0–1.0 normalisiert, wie laut der Klatscher war
+ */
+mic_ClapEvent mic_getClapEvent() {
+  return mic_lastClap;
+}
 
-  // ➤ 3. Klatscherkennung per Zustandsmaschine
-  switch (state) {
-    case IDLE:
-      // Wenn Lautstärke über Schwelle liegt und genug Zeit seit letztem Klatscher vergangen ist
-      if (peakToPeak > dynamicThreshold && millis() - lastClapTime > CLAP_COOLDOWN) {
-        state = PEAK_DETECTED;
-        lastPeak = peakToPeak;
-      }
-      break;
-
-    case PEAK_DETECTED:
-      // Wenn Lautstärke deutlich abfällt → echter Klatscher
-      if (peakToPeak < lastPeak - DROP_THRESHOLD) {
-        Serial.print("👏 KLATSCH erkannt!  Peak: ");
-        Serial.print(lastPeak);
-        Serial.print(" | Schwelle: ");
-        Serial.println(dynamicThreshold);
-        lastClapTime = millis();
-        state = IDLE;
-      }
-      // Sicherheitsrückkehr nach 100 ms (z. B. bei Störsignal)
-      if (millis() - startMillis > 100) {
-        state = IDLE;
-      }
-      break;
-  }
-
-  // ➤ 4. Sammle Daten für Mittelwert
-  averageSum += peakToPeak;
-  averageSamples++;
-
-  // ➤ 5. Zeige alle 15 Sekunden den durchschnittlichen Raumpegel
-  if (millis() - averageStartTime > AVERAGE_DURATION) {
-    float avg = (float)averageSum / averageSamples;
-    Serial.print("🌡 Durchschnittsraumpegel (15s): ");
-    Serial.println((int)avg);
-    averageStartTime = millis();
-    averageSum = 0;
-    averageSamples = 0;
-  }
-
-  delay(10);  // kurze Pause für bessere Reaktionszeit
+/**
+ * Gibt den Durchschnittspegel der letzten 15 Sekunden (normalisiert).
+ * Ideal zur Anzeige, Diagnose oder als dynamische Referenz.
+ */
+float mic_getAvgLevel15s() {
+  float avg = (mic_avgSamples > 0) ? ((float)mic_avgSum / mic_avgSamples) : 0.0;
+  return constrain(avg / mic_maxPeak, 0.0, 1.0);
 }
