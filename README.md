@@ -200,3 +200,23 @@ Ein vernetztes LED-Beleuchtungssystem basierend auf ESP32-Mikrocontrollern. Das 
 - Überhitzungsschutz beachten
 - Wasserschutz im Gehäuse vorsehen
 
+## Hardware-Infos
+Vibration motor
+
+Parameters：
+Rated Voltage: 5.0V DC
+Working Voltage: 3.0~5.3V DC
+Rated Rotate Speed: Min. 9000RPM
+Rated Current: Max. 60mAh
+Starting Current: Max. 90mAh
+Starting Voltage: DC 3.7V
+Insulation Resistance: 10Mohm
+Compatibility: Compatible with Arduino / Arduino Mega
+Size: 30 x 21 x 6mm/1.8 x 0.82 x 0.23in
+
+Features:
+1. Made of highquality mobile phone vibration motor, the vibration effect is obvious.
+2. The mos amplification driver can be controlled directly through the digital port of the Arduino.
+3. The vibration intensity of the motor can be controlled by PWM.
+4. This module can easily convert electrical signals to mechanical vibration.
+5. Suitable for the production of vibrationsensitive interactive products, wearable smart device vibration reminders, etc.
