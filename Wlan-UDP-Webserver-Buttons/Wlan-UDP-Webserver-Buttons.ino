@@ -165,6 +165,10 @@ void triggerFastBlink() {
   led_on = false;  // optional für sauberen Start
 }
 
+// =====================[ VIBRATION ]======================
+
+const int VIBRATION_MOTOR_PIN = 23;
+
 // =====================[ SETUP ]=============================
 
 void setup() {
@@ -183,6 +187,10 @@ void setup() {
   pinMode(STATUS_LED_R_PIN, OUTPUT);
   pinMode(STATUS_LED_G_PIN, OUTPUT);
   pinMode(STATUS_LED_B_PIN, OUTPUT);
+
+  pinMode(VIBRATION_MOTOR_PIN, OUTPUT);
+  digitalWrite(VIBRATION_MOTOR_PIN, LOW);
+  void vibratePulse(int dauer_ms = 100);
 
   // BOOT COLOR
   setColor(true, false, true);
@@ -261,6 +269,9 @@ void setup() {
     Serial.println("HTTP Server gestartet");
   
   }
+
+  // === IMPULSE
+  vibratePulse();
 
 }
 
@@ -602,6 +613,14 @@ void checkUdpMessages() {
   }
 }
 
+// =====================[ VIBRATION ]=============================
+
+void vibratePulse(int dauer_ms = 250) {
+  digitalWrite(VIBRATION_MOTOR_PIN, HIGH);
+  delay(dauer_ms);
+  digitalWrite(VIBRATION_MOTOR_PIN, LOW);
+}
+
 // =====================[ BUTTON AND STATUS LED ]=============================
 
 void checkStatus() {
@@ -615,6 +634,7 @@ void checkStatus() {
       was_pressed = true;
       override_led = true;
       setColor(true, false, false);  // ROT anzeigen
+      vibratePulse(); // haptisches feedback
     }
 
     if (millis() - button_pressed_since >= 5000) {
@@ -626,6 +646,8 @@ void checkStatus() {
   } else {
     if (was_pressed) {
       unsigned long press_duration = millis() - button_pressed_since;
+
+      
 
       if (press_duration < 1000) {
         Serial.println(">>> BUTTON: Kurz gedrückt (unter 1 Sekunde)");
@@ -643,10 +665,6 @@ void checkStatus() {
     statusLED(); 
   }
 }
-
-// =====================[ WEBSERVER ]=============================
-
-
 
 // =====================[ CONFIG VARS ]=============================
 

@@ -3,7 +3,7 @@ const int LED_RING_PIN = 4;
 const int LED_RING_COUNT = 16;
 
 // ==== ULTRASCHALL HC-SR04 ====
-const int SONICSENSOR_TRIG_PIN = 5; // Prüfen auf 21 oder 22
+const int SONICSENSOR_TRIG_PIN = 21; // War auf 5, jetzt 21
 const int SONICSENSOR_ECHO_PIN = 18;
 
 // ==== DIP-SCHALTER (Konfigurations-GPIOs) ====
@@ -21,8 +21,8 @@ const int STATUS_LED_B_PIN = 26;
 const int BUTTON_PUSH_PIN = 19; // Push Button – Reboot
 
 // ==== TBA: Vibrationsmotor ====
-const int VIBRATION_MOTOR_PIN = 0;
+const int VIBRATION_MOTOR_PIN = 23;
 
 // ==== TBA: Mikrofon (MAX9814 AGC) ====
-const int MIC_PIN = 0;
+const int MIC_PIN = 34;
 
