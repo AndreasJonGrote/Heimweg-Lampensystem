@@ -1,23 +1,33 @@
 // AR on GND, Gain on 5V
-#define MIC_PIN 34  // ADC-Eingang für MAX9814
+#define MIC_PIN 34  // ADC-Eingang für MAX9814 (AR auf GND, Gain auf 5V)
 
 // Konstanten für die Klatscherkennung
-const int mic_CLAP_THRESHOLD = 900;     // Erhöht, um Musik besser zu filtern
-const int mic_MIN_TIME_BETWEEN_CLAPS = 300; // Erhöht, um Mehrfacherkennungen zu vermeiden
-const int mic_NOISE_FLOOR = 150;        
-const int mic_MAX_CLAP_DURATION = 50;   
-const float mic_MIN_INTENSITY = 0.20;   // Minimale Intensität (0.0-1.0) für gültige Klatscher
-const int mic_DOUBLE_CLAP_LOCKTIME = 5000; // Sperrzeit nach Doppelklatscher in ms
-const unsigned long mic_SAMPLE_INTERVAL = 1; // Minimale Zeit zwischen Samples in ms
+const int mic_CLAP_THRESHOLD = 900;      // Grundempfindlichkeit: Ab diesem Amplitudenwert wird ein Signal als möglicher Klatscher erkannt
+const int mic_MIN_TIME_BETWEEN_CLAPS = 300;  // Minimale Zeit (ms) zwischen zwei Klatschern, verhindert Mehrfacherkennung
+const int mic_NOISE_FLOOR = 150;         // Rauschunterdrückung: Signale unter diesem Wert werden ignoriert
+const int mic_MAX_CLAP_DURATION = 50;    // Maximale Dauer (ms) eines Klatschers, filtert längere Geräusche
+const float mic_MIN_INTENSITY = 0.20;    // Minimale normalisierte Intensität (0.0-1.0) für gültige Klatscher
+                                        // Berechnung: (Amplitude-THRESHOLD)/THRESHOLD, also hier min. 20% über THRESHOLD
+const int mic_DOUBLE_CLAP_LOCKTIME = 5000;  // Sperrzeit (ms) nach erkanntem Doppelklatscher
+const unsigned long mic_SAMPLE_INTERVAL = 1; // Abtastintervall (ms) für die Signalverarbeitung
+const unsigned long mic_RECALIBRATION_INTERVAL = 300000; // Rekalibrierung alle 5 Minuten (300000ms)
+
+// Konfiguration
+bool mic_autoRecalibrate = true;  // Automatische Rekalibrierung alle 5 Minuten
 
 // Globale Zustandsvariablen
-int mic_baseline = 0;            // Wird in setup() kalibriert
+int mic_baseline = 0;            // Grundpegel des Mikrofons, wird in setup() kalibriert
+                                // Wird von allen Amplitudenmessungen abgezogen, um den "echten" Ausschlag zu messen
 unsigned long mic_lastClapTime = 0;  // Zeitpunkt des letzten Klatschens
 int mic_clapCount = 0;          // Zählt Klatscher
 unsigned long mic_firstClapTime = 0;    // Zeitpunkt des ersten Klatschens
 bool mic_isLocked = false;      // Sperrstatus
 unsigned long mic_lockUntil = 0;        // Sperrzeit bis zu diesem Zeitpunkt
 unsigned long mic_lastSampleTime = 0;  // Zeitpunkt der letzten Messung
+unsigned long mic_lastCalibrationTime = 0; // Zeitpunkt der letzten Kalibrierung
+bool mic_isPotentialClap = false;  // Flag für mögliches Klatschen
+int mic_maxAmplitude = 0;       // Maximale Amplitude während eines Events
+unsigned long mic_eventStartTime = 0; // Startzeit eines Events
 
 void setup() {
   Serial.begin(115200);
@@ -34,15 +44,39 @@ void setup() {
   Serial.print("Baseline: ");
   Serial.println(mic_baseline);
   Serial.println("-------------------");
+  if (mic_autoRecalibrate) {
+    Serial.println("Automatische Rekalibrierung aktiv (alle 5 Minuten)");
+    Serial.println("-------------------");
+  }
 }
 
 void mic_calibrateBaseline() {
+  // Kalibriert den Grundpegel (Baseline) des Mikrofons
+  // - Nimmt 100 Samples über 1 Sekunde
+  // - Berechnet den Durchschnitt als Referenzwert
+  // - Dieser Wert wird später von allen Messungen abgezogen,
+  //   um den tatsächlichen Ausschlag des Signals zu ermitteln
+  // - Wichtig: Während der Kalibrierung sollte es möglichst leise sein!
+  
   long sum = 0;
   for(int i = 0; i < 100; i++) {
     sum += analogRead(MIC_PIN);
-    delay(10);
+    delay(10);  // 100 Samples über 1 Sekunde verteilt
   }
-  mic_baseline = sum / 100;
+  int newBaseline = sum / 100;
+  
+  // Optional: Große Änderungen in der Console ausgeben
+  if (abs(newBaseline - mic_baseline) > 100) {
+    Serial.println("------------------------");
+    Serial.print("Baseline angepasst: ");
+    Serial.print(mic_baseline);
+    Serial.print(" -> ");
+    Serial.println(newBaseline);
+    Serial.println("------------------------");
+  }
+  
+  mic_baseline = newBaseline;
+  mic_lastCalibrationTime = millis();
 }
 
 void mic_checkLockStatus() {
@@ -74,10 +108,18 @@ void mic_processClap(float intensity, unsigned long currentTime) {
   if (!mic_isLocked && mic_clapCount == 1) {
     // ====================================================================
     // HIER: Verarbeitung des normalisierten Intensitätswerts (0.0 - 1.0)
-    // Beispiel:
+    // 
+    // Der Intensitätswert ist bereits:
+    // - Normalisiert zwischen 0.0 und 1.0
+    // - Gefiltert (nur gültige Klatscher über CLAP_THRESHOLD)
+    // - Über MIN_INTENSITY (mind. 0.20)
+    // - Zeitlich gefiltert (MAX_CLAP_DURATION, MIN_TIME_BETWEEN_CLAPS)
+    //
+    // Beispiel für Weiterverarbeitung:
     // void processIntensity(float value) {
     //   // value ist normalisiert zwischen 0.0 und 1.0
-    //   // z.B. LED-Helligkeit oder andere Aktionen basierend auf der Intensität
+    //   // z.B. LED-Helligkeit = value * 255
+    //   // oder andere intensitätsbasierte Aktionen
     // }
     // ====================================================================
     
@@ -92,10 +134,6 @@ void mic_processClap(float intensity, unsigned long currentTime) {
 }
 
 void mic_processAudio() {
-  static bool mic_isPotentialClap = false;  // Lokale statische Variable
-  static int mic_maxAmplitude = 0;          // Lokale statische Variable
-  static unsigned long mic_eventStartTime = 0; // Lokale statische Variable
-  
   int mic_rawValue = analogRead(MIC_PIN);
   int mic_amplitude = abs(mic_rawValue - mic_baseline);
   unsigned long currentTime = millis();
@@ -134,7 +172,14 @@ void mic_processAudio() {
 void loop() {
   unsigned long currentTime = millis();
   
-  // Prüfe ob es Zeit für ein neues Sample ist
+  // Prüfe ob Rekalibrierung nötig ist
+  if (mic_autoRecalibrate && currentTime - mic_lastCalibrationTime >= mic_RECALIBRATION_INTERVAL) {
+    // Nur rekalibrieren wenn gerade kein Klatscher verarbeitet wird
+    if (!mic_isPotentialClap && !mic_isLocked) {
+      mic_calibrateBaseline();
+    }
+  }
+  
   if (currentTime - mic_lastSampleTime >= mic_SAMPLE_INTERVAL) {
     mic_lastSampleTime = currentTime;
     mic_checkLockStatus();
