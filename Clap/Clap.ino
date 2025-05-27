@@ -1,4 +1,73 @@
-// AR on GND, Gain on 5V
+/*
+ * ESP32 Klatsch-Erkennungssystem mit MAX9814 Mikrofon
+ * ================================================
+ * 
+ * HARDWARE SETUP:
+ * --------------
+ * MAX9814 Mikrofon:
+ * - AR (Attack/Release) auf GND → schnelle Reaktion auf Amplitudenänderungen
+ * - Gain auf 5V → maximale Verstärkung (60dB)
+ * - Out an GPIO34 (ADC1_CH6) → Einer der zwei ADC-Pins die im WiFi-Modus nutzbar sind
+ * 
+ * ADC KONFIGURATION:
+ * ----------------
+ * - 12-bit Auflösung: 0-4095
+ * - Sampling Rate: ~1ms (definiert durch mic_SAMPLE_INTERVAL)
+ * - DC-Offset wird durch Baseline-Kalibrierung kompensiert
+ * 
+ * SIGNALVERARBEITUNG:
+ * -----------------
+ * 1. Baseline-Ermittlung:
+ *    - 100 Samples über 1 Sekunde
+ *    - Durchschnitt = Ruhelevel des Mikrofons
+ *    - Automatische Rekalibrierung alle 5 Minuten (optional)
+ * 
+ * 2. Amplitudenberechnung:
+ *    - Rohdaten - Baseline = tatsächliche Amplitude
+ *    - Absoluter Wert (negative Ausschläge werden positiv)
+ * 
+ * 3. Klatsch-Erkennung:
+ *    a) Vorfilterung:
+ *       - Signal muss über NOISE_FLOOR (150) liegen
+ *       - Aktiviert Klatsch-Erkennungsmodus
+ * 
+ *    b) Amplituden-Tracking:
+ *       - Maximale Amplitude während des Events wird gespeichert
+ *       - Event endet wenn Signal unter NOISE_FLOOR fällt
+ *       - Oder MAX_CLAP_DURATION (50ms) überschritten wird
+ * 
+ *    c) Validierung:
+ *       - Amplitude > CLAP_THRESHOLD (900)
+ *       - Dauer < MAX_CLAP_DURATION (50ms)
+ *       - Mindestabstand zum letzten Klatscher > MIN_TIME_BETWEEN_CLAPS (300ms)
+ *       - Normalisierte Intensität >= MIN_INTENSITY (0.20)
+ *       - Keine aktive Sperre
+ * 
+ * 4. Intensitätsberechnung:
+ *    - Normalisierter Wert zwischen 0.0 und 1.0
+ *    - Formel: (maxAmplitude - THRESHOLD) / THRESHOLD
+ *    - Beispiel: 
+ *      Bei THRESHOLD=900:
+ *      900 → 0.0
+ *      1800 → 1.0
+ *      1350 → 0.5
+ * 
+ * DOPPELKLATSCHER:
+ * --------------
+ * - Zwei Klatscher innerhalb von 1 Sekunde = Doppelklatscher
+ * - Löst 5-Sekunden-Sperre aus (DOUBLE_CLAP_LOCKTIME)
+ * - Verhindert unbeabsichtigte weitere Erkennungen
+ * 
+ * AUTOMATISCHE REKALIBRIERUNG:
+ * -------------------------
+ * - Alle 5 Minuten (wenn aktiviert)
+ * - Nur wenn gerade kein Klatscher erkannt wird
+ * - Kompensiert:
+ *   → Temperaturänderungen
+ *   → Änderungen der Umgebungsgeräusche
+ *   → Mikrofonalterung
+ */
+
 #define MIC_PIN 34  // ADC-Eingang für MAX9814 (AR auf GND, Gain auf 5V)
 
 // Konstanten für die Klatscherkennung
@@ -15,19 +84,25 @@ const unsigned long mic_RECALIBRATION_INTERVAL = 300000; // Rekalibrierung alle 
 // Konfiguration
 bool mic_autoRecalibrate = true;  // Automatische Rekalibrierung alle 5 Minuten
 
-// Globale Zustandsvariablen
+/*
+ * GLOBALE ZUSTANDSVARIABLEN
+ * ========================
+ * Diese Variablen speichern den aktuellen Zustand des Systems.
+ * Sie müssen global sein, da sie zwischen verschiedenen Funktionsaufrufen
+ * und über die Zeit hinweg ihren Wert behalten müssen.
+ */
 int mic_baseline = 0;            // Grundpegel des Mikrofons, wird in setup() kalibriert
                                 // Wird von allen Amplitudenmessungen abgezogen, um den "echten" Ausschlag zu messen
 unsigned long mic_lastClapTime = 0;  // Zeitpunkt des letzten Klatschens
-int mic_clapCount = 0;          // Zählt Klatscher
-unsigned long mic_firstClapTime = 0;    // Zeitpunkt des ersten Klatschens
-bool mic_isLocked = false;      // Sperrstatus
-unsigned long mic_lockUntil = 0;        // Sperrzeit bis zu diesem Zeitpunkt
-unsigned long mic_lastSampleTime = 0;  // Zeitpunkt der letzten Messung
+int mic_clapCount = 0;          // Zählt Klatscher für Doppelklatscher-Erkennung
+unsigned long mic_firstClapTime = 0;    // Zeitpunkt des ersten Klatschens (für Doppelklatscher)
+bool mic_isLocked = false;      // Sperrstatus nach Doppelklatscher
+unsigned long mic_lockUntil = 0;        // Zeitpunkt bis zu dem die Sperre aktiv ist
+unsigned long mic_lastSampleTime = 0;  // Zeitpunkt der letzten Messung (für Sample-Intervall)
 unsigned long mic_lastCalibrationTime = 0; // Zeitpunkt der letzten Kalibrierung
-bool mic_isPotentialClap = false;  // Flag für mögliches Klatschen
-int mic_maxAmplitude = 0;       // Maximale Amplitude während eines Events
-unsigned long mic_eventStartTime = 0; // Startzeit eines Events
+bool mic_isPotentialClap = false;  // Flag für laufende Klatsch-Erkennung
+int mic_maxAmplitude = 0;       // Maximale Amplitude während des aktuellen Events
+unsigned long mic_eventStartTime = 0; // Startzeit des aktuellen Events
 
 void setup() {
   Serial.begin(115200);
@@ -51,12 +126,21 @@ void setup() {
 }
 
 void mic_calibrateBaseline() {
-  // Kalibriert den Grundpegel (Baseline) des Mikrofons
-  // - Nimmt 100 Samples über 1 Sekunde
-  // - Berechnet den Durchschnitt als Referenzwert
-  // - Dieser Wert wird später von allen Messungen abgezogen,
-  //   um den tatsächlichen Ausschlag des Signals zu ermitteln
-  // - Wichtig: Während der Kalibrierung sollte es möglichst leise sein!
+  /*
+   * BASELINE-KALIBRIERUNG
+   * ====================
+   * Ermittelt den Grundpegel des Mikrofons durch Mittelwertbildung.
+   * 
+   * WICHTIG:
+   * - Während der Kalibrierung sollte es möglichst leise sein
+   * - Der Wert liegt typischerweise in der Mitte des ADC-Bereichs
+   * - Bei 12-Bit etwa um 2048 (4096/2)
+   * 
+   * MECHANIK:
+   * 1. 100 Samples über 1 Sekunde verteilt
+   * 2. Durchschnitt = Baseline
+   * 3. Große Änderungen werden in der Konsole protokolliert
+   */
   
   long sum = 0;
   for(int i = 0; i < 100; i++) {
@@ -80,6 +164,18 @@ void mic_calibrateBaseline() {
 }
 
 void mic_checkLockStatus() {
+  /*
+   * SPERRSTATUS-PRÜFUNG
+   * ==================
+   * Prüft ob eine aktive Sperre abgelaufen ist.
+   * Sperren werden nach Doppelklatschern aktiviert.
+   * 
+   * MECHANIK:
+   * - Wenn Sperre aktiv und Sperrzeit abgelaufen:
+   *   → Sperre aufheben
+   *   → Klatschzähler zurücksetzen
+   */
+  
   unsigned long currentTime = millis();
   if (mic_isLocked && currentTime >= mic_lockUntil) {
     mic_isLocked = false;
@@ -88,14 +184,31 @@ void mic_checkLockStatus() {
 }
 
 void mic_processClap(float intensity, unsigned long currentTime) {
+  /*
+   * KLATSCH-VERARBEITUNG
+   * ===================
+   * Verarbeitet einen erkannten Klatscher und prüft auf Doppelklatscher.
+   * 
+   * PARAMETER:
+   * - intensity: Normalisierte Intensität (0.0-1.0)
+   * - currentTime: Aktueller Zeitstempel
+   * 
+   * MECHANIK:
+   * 1. Klatschzähler erhöhen
+   * 2. Wenn erster Klatscher:
+   *    → Zeit speichern
+   * 3. Wenn zweiter Klatscher innerhalb 1 Sekunde:
+   *    → Doppelklatscher erkannt
+   *    → 5-Sekunden-Sperre aktivieren
+   * 4. Wenn zweiter Klatscher nach mehr als 1 Sekunde:
+   *    → Als neuer erster Klatscher behandeln
+   */
+  
   mic_clapCount++;
   if (mic_clapCount == 1) {
     mic_firstClapTime = currentTime;
   }
   else if (mic_clapCount == 2 && (currentTime - mic_firstClapTime) < 1000) {
-    Serial.println("------------------------");
-    Serial.println("Doppelklatscher! Sperre aktiv für 5 Sekunden");
-    Serial.println("------------------------");
     mic_isLocked = true;
     mic_lockUntil = currentTime + mic_DOUBLE_CLAP_LOCKTIME;
     mic_clapCount = 0;
@@ -134,6 +247,33 @@ void mic_processClap(float intensity, unsigned long currentTime) {
 }
 
 void mic_processAudio() {
+  /*
+   * AUDIO-SIGNALVERARBEITUNG
+   * ======================
+   * Hauptfunktion für die Klatsch-Erkennung.
+   * Verarbeitet das Mikrofonsignal und erkennt Klatscher.
+   * 
+   * MECHANIK:
+   * 1. Signal einlesen und Amplitude berechnen
+   *    - Rohdaten vom ADC
+   *    - Baseline abziehen
+   *    - Absoluten Wert nehmen
+   * 
+   * 2. Klatsch-Erkennung:
+   *    a) Wenn kein Event läuft und Signal > NOISE_FLOOR:
+   *       → Neues Event starten
+   *       → Amplitude speichern
+   * 
+   *    b) Wenn Event läuft:
+   *       → Maximale Amplitude aktualisieren
+   *       → Prüfen ob Event beendet (Signal < NOISE_FLOOR oder Timeout)
+   * 
+   *    c) Bei Event-Ende:
+   *       → Normalisierte Intensität berechnen
+   *       → Alle Kriterien prüfen
+   *       → Ggf. Klatscher verarbeiten
+   */
+  
   int mic_rawValue = analogRead(MIC_PIN);
   int mic_amplitude = abs(mic_rawValue - mic_baseline);
   unsigned long currentTime = millis();
@@ -170,6 +310,18 @@ void mic_processAudio() {
 }
 
 void loop() {
+  /*
+   * HAUPTSCHLEIFE
+   * ============
+   * Koordiniert die zeitgesteuerten Aktionen:
+   * 1. Automatische Rekalibrierung (wenn aktiviert)
+   * 2. Audio-Signalverarbeitung im definierten Intervall
+   * 
+   * TIMING:
+   * - Rekalibrierung alle 5 Minuten
+   * - Audio-Sampling alle 1ms
+   */
+  
   unsigned long currentTime = millis();
   
   // Prüfe ob Rekalibrierung nötig ist
