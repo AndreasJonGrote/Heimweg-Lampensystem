@@ -11,6 +11,10 @@ const int DIP_STANDALONE_PIN    = 13; // DIP 1 – WLAN aus (lokal)
 const int DIP_ACCESS_POINT_PIN  = 25; // DIP 2 – Master: Access Point starten
 const int DIP_DYNAMIC_MODE_PIN  = 33; // DIP 3 – Modus: dynamisch vs. statisch (z. B. 80 %)
 const int DIP_DYNAMIC_COLOR_PIN = 32; // DIP 4 – Farbe: dynamisch oder fix weiß
+const int DIP_ENABLE_SONIC_PIN  = 12; // DIP 5 – Sonic Sensor: aktiviert oder deaktiviert
+const int DIP_ENABLE_MIC_PIN    = 15; // DIP 6 – Microphone: aktiviert oder deaktiviert
+
+
 
 // ==== RGB STATUSLED (KY-016, gemeinsame Kathode) ====
 const int STATUS_LED_R_PIN = 27;

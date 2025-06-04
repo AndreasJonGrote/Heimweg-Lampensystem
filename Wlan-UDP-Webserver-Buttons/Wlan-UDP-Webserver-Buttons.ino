@@ -124,6 +124,8 @@ struct DipConfig {
   bool isMasterAP;
   bool isDynamicMode;
   bool isDynamicColor;
+  bool hasSonicSensor;
+  bool hasMicrophone;
 };
 
 DipConfig readDipConfig();
@@ -134,6 +136,8 @@ bool IS_MASTER        = false;
 bool IS_SLAVE         = false;
 bool IS_DYNAMIC_MODE  = false;
 bool IS_DYNAMIC_COLOR = false;
+bool HAS_SONIC_SENSOR = false;
+bool HAS_MICROPHONE   = false;
 
 // =====================[ PUSH BUTTON ]======================
 
@@ -209,7 +213,9 @@ void setup() {
   IS_MASTER        = config.isMasterAP;
   IS_DYNAMIC_MODE  = config.isDynamicMode;
   IS_DYNAMIC_COLOR = config.isDynamicColor;
-
+  HAS_SONIC_SENSOR = config.hasSonicSensor;
+  HAS_MICROPHONE   = config.hasMicrophone;
+  
   bool existing_ap = checkExistingAP() ;
 
   Serial.print(">>> Role: ");
@@ -674,6 +680,8 @@ DipConfig readDipConfig() {
   cfg.isMasterAP     = digitalRead(DIP_ACCESS_POINT_PIN)  == LOW;
   cfg.isDynamicMode  = digitalRead(DIP_DYNAMIC_MODE_PIN)  == LOW;
   cfg.isDynamicColor = digitalRead(DIP_DYNAMIC_COLOR_PIN) == LOW;
+  cfg.hasSonicSensor = digitalRead(DIP_ENABLE_SONIC_PIN) == LOW;
+  cfg.hasMicrophone  = digitalRead(DIP_ENABLE_MIC_PIN) == LOW;
   return cfg;
 }
 
